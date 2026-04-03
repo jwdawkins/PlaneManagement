@@ -4,5 +4,7 @@ services:
     image: planemanagement:local
     restart: unless-stopped
     env_file: .env
+    environment:
+      - PILOTS_JSON=/data/pilots.json
     volumes:
       - ./data:/data
