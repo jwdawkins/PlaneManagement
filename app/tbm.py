@@ -55,6 +55,7 @@ class TBM:
     # ── init ─────────────────────────────────────────────────────────────────
     def __init__(self):
         self.con = sqlite3.connect(self.DB)
+        self.peers = []   # list of TBM instances to aggregate with for pilot report
 
     # ── command router ───────────────────────────────────────────────────────
     def process(self, txt: str, slack_id: str) -> str:
@@ -213,46 +214,65 @@ class TBM:
 
     # ── pilot report ─────────────────────────────────────────────────────────
     def pilotReport(self, pilot: dict) -> str:
-        flight_type   = pilot["flight_type"]
-        hobbs_offset  = pilot.get("hobbs_offset", 0)
-        name          = pilot["name"]
+        flight_type  = pilot["flight_type"]
+        hobbs_offset = pilot.get("hobbs_offset", 0)
+        name         = pilot["name"]
 
-        cur = self.con.cursor()
+        # All instances to aggregate (self + any peers)
+        all_instances = [self] + self.peers
+
         msg = f"PILOT FLIGHT REPORT — {name}\n\n"
 
         for label, days in [("Last 30 Days", 30), ("Last 90 Days", 90), ("Last 12 Months", 365)]:
-            cur.execute(
-                f"SELECT sum(valuen) FROM {self.TABLE} WHERE type=? AND date>=date('now',?)",
-                (flight_type, f"-{days} day"),
-            )
-            v = cur.fetchone()[0] or 0
-            msg += f"{label}: {float(v):.1f}\n"
+            total = 0.0
+            for inst in all_instances:
+                cur = inst.con.cursor()
+                cur.execute(
+                    f"SELECT sum(valuen) FROM {inst.TABLE} WHERE type=? AND date>=date('now',?)",
+                    (flight_type, f"-{days} day"),
+                )
+                total += float(cur.fetchone()[0] or 0)
+            msg += f"{label}: {total:.1f}\n"
 
-        cur.execute(
-            f"SELECT sum(valuen) FROM {self.TABLE} WHERE type=?",
-            (flight_type,),
-        )
-        tbm_time = float(cur.fetchone()[0] or 0)
-        msg += f"TBM Time: {tbm_time:.1f}\n"
+        total_time = 0.0
+        per_aircraft = []
+        for inst in all_instances:
+            cur = inst.con.cursor()
+            cur.execute(
+                f"SELECT sum(valuen) FROM {inst.TABLE} WHERE type=?",
+                (flight_type,),
+            )
+            t = float(cur.fetchone()[0] or 0)
+            total_time += t
+            per_aircraft.append(f"{inst.TABLE.replace('logs_', '').upper()}: {t:.1f}")
+
+        msg += f"TBM Time: {total_time:.1f}  ({', '.join(per_aircraft)})\n"
 
         if hobbs_offset:
-            msg += f"Total Time: {tbm_time + hobbs_offset:.1f}\n"
+            msg += f"Total Time: {total_time + hobbs_offset:.1f}\n"
 
-        # Recent flights (last month)
+        # Recent flights (last month) — across all aircraft
         msg += "\n"
         cutoff = datetime.now() - relativedelta(months=1)
-        uid = self.getLastFlightUid()
-        while uid is not None:
-            row_date_str = self.getFlightDate(uid)
-            d = datetime.strptime(row_date_str, "%Y-%m-%d %H:%M:%S.%f")
-            if d < cutoff:
-                break
-            if self.getFlightPilot(uid) == flight_type:
-                prev_uid = self.getPreviousFlightUid(uid)
-                fuel_used = 292 - int(self.getFlightFuel(prev_uid)) if prev_uid else 0
-                details = self.getFlightDetails(uid) or ""
-                msg += f"{d.strftime('%b %d')} [{fuel_used}] {details}\n"
-            uid = self.getPreviousFlightUid(uid)
+        flights = []
+        for inst in all_instances:
+            uid = inst.getLastFlightUid()
+            while uid is not None:
+                row_date_str = inst.getFlightDate(uid)
+                d = datetime.strptime(row_date_str, "%Y-%m-%d %H:%M:%S.%f")
+                if d < cutoff:
+                    break
+                if inst.getFlightPilot(uid) == flight_type:
+                    prev_uid = inst.getPreviousFlightUid(uid)
+                    fuel_used = 292 - int(inst.getFlightFuel(prev_uid)) if prev_uid else 0
+                    details = inst.getFlightDetails(uid) or ""
+                    aircraft = inst.TABLE.replace("logs_", "").upper()
+                    flights.append((d, aircraft, fuel_used, details))
+                uid = inst.getPreviousFlightUid(uid)
+
+        # Sort all flights newest-first
+        for d, aircraft, fuel_used, details in sorted(flights, key=lambda x: x[0], reverse=True):
+            msg += f"{d.strftime('%b %d')} [{aircraft}] [{fuel_used}] {details}\n"
 
         return msg.strip()
 

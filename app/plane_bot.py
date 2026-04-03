@@ -292,7 +292,12 @@ def build_handler(
         log.info("[%s] user=%s cmd=%r", plane_name, slack_user, text)
 
         try:
-            plane        = PlaneClass()
+            plane = PlaneClass()
+
+            # pilot — aggregate across all aircraft by injecting peer instances
+            if text.lower().split()[0] == "pilot" and peers:
+                plane.peers = [P() for P in peers]
+
             raw_response = plane.process(text, slack_user)
             response     = format_for_slack(raw_response, text, plane_name)
 
