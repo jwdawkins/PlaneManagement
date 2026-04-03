@@ -263,7 +263,12 @@ def build_handler(
     PlaneClass,
     bot_token: str,
     app_token: str,
+    peers: list = None,
 ) -> SocketModeHandler:
+    """
+    peers: list of TBM subclasses that should also receive a silent fuelp
+           update whenever this bot processes a fuelp command.
+    """
 
     slack_app = App(token=bot_token)
 
@@ -290,6 +295,16 @@ def build_handler(
             plane        = PlaneClass()
             raw_response = plane.process(text, slack_user)
             response     = format_for_slack(raw_response, text, plane_name)
+
+            # fuelp — silently mirror the update to all peer aircraft tables
+            if text.lower().split()[0] == "fuelp" and peers:
+                for PeerClass in peers:
+                    try:
+                        PeerClass().process(text, slack_user)
+                        log.info("[%s] fuelp mirrored to %s", plane_name, PeerClass.TABLE)
+                    except Exception:
+                        log.exception("[%s] Failed to mirror fuelp to %s", plane_name, PeerClass.TABLE)
+
         except Exception as exc:
             log.exception("[%s] Error processing command", plane_name)
             response = f":x: *Error:* {exc}"
@@ -323,8 +338,8 @@ def main():
         raise EnvironmentError(f"Missing required environment variables: {', '.join(missing)}")
 
     handlers = [
-        ("N900JV", build_handler("N900JV", _N900JV, required["N900JV_BOT_TOKEN"], required["N900JV_APP_TOKEN"])),
-        ("N188CD", build_handler("N188CD", _N188CD, required["N188CD_BOT_TOKEN"], required["N188CD_APP_TOKEN"])),
+        ("N900JV", build_handler("N900JV", _N900JV, required["N900JV_BOT_TOKEN"], required["N900JV_APP_TOKEN"], peers=[_N188CD])),
+        ("N188CD", build_handler("N188CD", _N188CD, required["N188CD_BOT_TOKEN"], required["N188CD_APP_TOKEN"], peers=[_N900JV])),
     ]
 
     threads = []
