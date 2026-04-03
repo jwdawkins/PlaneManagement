@@ -1,0 +1,28 @@
+{
+  "pilots": {
+    "U0AHRJ7PHNC": {
+      "name": "Jerry",
+      "flight_type": 0,
+      "receipt_type": 5,
+      "hobbs_offset": 1266
+    },
+    "RODNEY_SLACK_ID": {
+      "name": "Rodney",
+      "flight_type": 1,
+      "receipt_type": 11,
+      "hobbs_offset": 0
+    },
+    "MAT_SLACK_ID": {
+      "name": "Mat",
+      "flight_type": 7,
+      "receipt_type": 12,
+      "hobbs_offset": 0
+    }
+  },
+  "ferry_pilot": {
+    "name": "Ferry",
+    "flight_type": 7,
+    "receipt_type": null,
+    "hobbs_offset": 0
+  }
+}
