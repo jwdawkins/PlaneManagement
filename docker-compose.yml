@@ -1,6 +1,7 @@
 services:
   planemanagement:
-    image: jwdawkins/planemanagement:latest
+    build: .
+    image: planemanagement:local
     restart: unless-stopped
     env_file: .env
     volumes:
