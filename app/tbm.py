@@ -392,10 +392,10 @@ class TBM:
             (p["name"], p["flight_type"])
             for p in _PILOT_CFG["pilots"].values()
         ]
-        # Add "Others" bucket for ferry / unknown
+        # Add "Others" bucket for ferry / unknown flights (flight_type 7)
         pilots.append(("Others", 7))
 
-        # Deduplicate by flight_type (Others / ferry both map to 7)
+        # Deduplicate by flight_type
         seen = set()
         unique_pilots = []
         for name, ft in pilots:

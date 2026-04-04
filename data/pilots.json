@@ -20,8 +20,8 @@
     },
     "U0AQR19CH44": {
       "name": "Mat",
-      "flight_type": 7,
-      "receipt_type": 12,
+      "flight_type": 16,
+      "receipt_type": 17,
       "hobbs_offset": 0,
       "emails": ["mat@keyrenterpmc.com"],
       "owns": "logs_n188cd"
