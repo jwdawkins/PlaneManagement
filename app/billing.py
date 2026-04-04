@@ -294,8 +294,7 @@ def build_report(pilot_name: str, aircraft: list, period: datetime = None) -> st
     separator = "─" * 48
 
     lines = [
-        f"BILLING REPORT — {pilot['name'].upper()}",
-        f"Period: {month_label}",
+        f"TBM Billing Report — {pilot['name'].title()} — {month_label}",
         separator,
         "",
     ]
@@ -355,7 +354,8 @@ def main():
                         default=list(AIRCRAFT.keys()))
     parser.add_argument("--month",    default=None,
                         help="Month to bill: 'April' (current year) or 'April 2025' (defaults to previous month)")
-    parser.add_argument("--send",     action="store_true", help="Email report to pilot")
+    parser.add_argument("--send",     default=None, metavar="PILOT",
+                        help="Email report to this pilot's addresses (e.g. --send jerry)")
     args = parser.parse_args()
 
     # Resolve billing period
@@ -380,14 +380,14 @@ def main():
     print(report)
 
     if args.send:
-        month = period.strftime("%B %Y")
-        subject = f"Billing Report — {args.pilot.title()} — {month}"
-        results = send_to_pilot(args.pilot, subject, report)
+        month   = period.strftime("%B %Y")
+        subject = f"TBM Billing Report — {args.pilot.title()} — {month}"
+        results = send_to_pilot(args.send, subject, report)
         if results:
             for name, ok in results.items():
                 print(f"\nEmail → {name}: {'SENT' if ok else 'FAILED'}")
         else:
-            print("\nWARNING: No email addresses configured for this pilot.")
+            print(f"\nWARNING: No email addresses configured for '{args.send}'.")
 
 
 if __name__ == "__main__":
