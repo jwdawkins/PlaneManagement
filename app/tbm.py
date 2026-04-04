@@ -121,7 +121,7 @@ class TBM:
                 msg = self.usage(slack_id)
 
         else:
-            msg = self._help()
+            msg = self._help(slack_id)
 
         # Ensure WAL is flushed and connection closed cleanly
         try:
@@ -135,8 +135,8 @@ class TBM:
 
         return msg
 
-    def _help(self) -> str:
-        return (
+    def _help(self, slack_id: str = "") -> str:
+        lines = (
             "status\n"
             "ferry [FUEL L] [FUEL R] [HOBBS]\n"
             "log [FUEL L] [FUEL R] [HOBBS] [NOTE]\n"
@@ -149,9 +149,12 @@ class TBM:
             "squawk\n"
             "annual [YYYY-MM-DD]\n"
             "report\n"
-            "pilot\n"
-            "usage"
+            "pilot"
         )
+        p = get_pilot(slack_id)
+        if p and p.get("owns"):
+            lines += "\nusage"
+        return lines
 
     # ── status ───────────────────────────────────────────────────────────────
     def status(self) -> str:
