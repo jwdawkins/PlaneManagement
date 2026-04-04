@@ -198,7 +198,8 @@ def _fmt_squawk_report(raw: str) -> str:
     return msg.strip()
 
 
-def _fmt_help(plane_name: str) -> str:
+def _fmt_help(plane_name: str, slack_id: str = "") -> str:
+    from tbm import get_pilot
     cmds = [
         ("`status`",                          "Aircraft status"),
         ("`log [L] [R] [hobbs] [note]`",      "Log a flight"),
@@ -213,13 +214,16 @@ def _fmt_help(plane_name: str) -> str:
         ("`report`",                          "Aircraft report"),
         ("`delete [log | receipt | squawk]`", "Delete the last entry"),
     ]
+    p = get_pilot(slack_id)
+    if p and p.get("owns"):
+        cmds.append(("`usage`", "Aircraft usage balance"))
     msg = ""
     for cmd, desc in cmds:
         msg += f"{cmd}  {desc}\n"
     return msg.strip()
 
 
-def format_for_slack(raw: str, cmd: str, plane_name: str):
+def format_for_slack(raw: str, cmd: str, plane_name: str, slack_id: str = ""):
     """Route raw TBM response through the correct Slack mrkdwn formatter."""
     if raw is None:
         return ":x: No response received from the database."
@@ -267,7 +271,7 @@ def format_for_slack(raw: str, cmd: str, plane_name: str):
                 lines.append(line)
         return ":airplane: *Aircraft Usage Balance*\n" + "\n".join(lines)
 
-    return _fmt_help(plane_name)
+    return _fmt_help(plane_name, slack_id)
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +318,7 @@ def build_handler(
                 plane.peers = [P() for P in peers]
 
             raw_response = plane.process(text, slack_user)
-            response     = format_for_slack(raw_response, text, plane_name)
+            response     = format_for_slack(raw_response, text, plane_name, slack_user)
 
             # fuelp — silently mirror the update to all peer aircraft tables
             if text.lower().split()[0] == "fuelp" and peers:
