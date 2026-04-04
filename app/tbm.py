@@ -113,6 +113,13 @@ class TBM:
         elif c0 == "last" and len(cmd) == 1:
             msg = str(self.getLastUsed())
 
+        elif c0 == "usage" and len(cmd) == 1:
+            p = get_pilot(slack_id)
+            if p is None or not p.get("owns"):
+                msg = "Command not available."
+            else:
+                msg = self.usage(slack_id)
+
         else:
             msg = self._help()
 
@@ -142,7 +149,8 @@ class TBM:
             "squawk\n"
             "annual [YYYY-MM-DD]\n"
             "report\n"
-            "pilot"
+            "pilot\n"
+            "usage"
         )
 
     # ── status ───────────────────────────────────────────────────────────────
@@ -273,6 +281,56 @@ class TBM:
         # Sort all flights newest-first
         for d, aircraft, fuel_used, details in sorted(flights, key=lambda x: x[0], reverse=True):
             msg += f"{d.strftime('%b %d')} [{aircraft}] [{fuel_used}] {details}\n"
+
+        return msg.strip()
+
+    # ── usage (cross-aircraft balance) ───────────────────────────────────────
+    def usage(self, slack_id: str) -> str:
+        """
+        For owners only (pilots with an 'owns' field in pilots.json).
+        Shows non-owner flight time on each aircraft since March 2026,
+        and the percentage balance between them.
+        """
+        CUTOFF = "2026-03-01"
+
+        # All flight types belonging to real pilots
+        all_flight_types = list({p["flight_type"] for p in _PILOT_CFG["pilots"].values()})
+
+        all_instances = [self] + self.peers
+        results = []
+
+        for inst in all_instances:
+            # Find the owner's flight_type for this aircraft
+            owner_ft = None
+            for p in _PILOT_CFG["pilots"].values():
+                if p.get("owns") == inst.TABLE:
+                    owner_ft = p["flight_type"]
+                    break
+
+            if owner_ft is None:
+                continue  # no owner defined — skip
+
+            # Sum time for every non-owner pilot flight type
+            non_owner_types = [ft for ft in all_flight_types if ft != owner_ft]
+            placeholders     = ",".join("?" * len(non_owner_types))
+            cur = inst.con.cursor()
+            cur.execute(
+                f"SELECT sum(valuen) FROM {inst.TABLE} "
+                f"WHERE type IN ({placeholders}) AND date >= ?",
+                (*non_owner_types, CUTOFF),
+            )
+            hrs  = float(cur.fetchone()[0] or 0)
+            tail = inst.TABLE.replace("logs_", "").upper()
+            results.append((tail, hrs))
+
+        if not results:
+            return "No ownership data configured."
+
+        total = sum(hrs for _, hrs in results)
+        msg   = ""
+        for tail, hrs in results:
+            pct  = (hrs / total * 100) if total > 0 else 0
+            msg += f"{tail} [{hrs:.1f}] - {pct:.0f}%\n"
 
         return msg.strip()
 

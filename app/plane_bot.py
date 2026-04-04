@@ -251,6 +251,21 @@ def format_for_slack(raw: str, cmd: str, plane_name: str):
         return f":memo: {raw}"
     if cmd0 == "delete":
         return f":wastebasket: {raw}"
+    if cmd0 == "usage":
+        if raw == "Command not available.":
+            return f":no_entry: {raw}"
+        lines = []
+        for line in raw.strip().splitlines():
+            # e.g. "N900JV [90.5] - 90%"
+            import re
+            m = re.match(r"(\S+)\s+\[([\d.]+)\]\s+-\s+(\d+)%", line)
+            if m:
+                tail, hrs, pct = m.group(1), m.group(2), m.group(3)
+                bar = "█" * (int(pct) // 10) + "░" * (10 - int(pct) // 10)
+                lines.append(f"*{tail}*  {hrs} hrs  `{bar}` {pct}%")
+            else:
+                lines.append(line)
+        return ":airplane: *Aircraft Usage Balance*\n" + "\n".join(lines)
 
     return _fmt_help(plane_name)
 
