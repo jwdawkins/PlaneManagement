@@ -185,14 +185,17 @@ def _aircraft_section(inst: TBM, pilot: dict, date_where: str) -> tuple[str, flo
             arr_fuel = inst.getFlightFuel(hobbs_uid)
             arr_str  = f"{int(arr_fuel)}" if show_arr else "--"
 
-            # Fuel used = departure of this block minus arrival, only when both are known
+            # Fuel delta = departure of this block minus arrival, only when both are known.
+            # Positive = fuel consumed (charge). Negative = fuel added (credit).
             fuel_str = ""
             if show_arr and block_dep_fuel is not None:
-                fuel_used      = block_dep_fuel - arr_fuel
+                fuel_used       = block_dep_fuel - arr_fuel
+                fuel_charge_fl  = fuel_used * fuel_price
+                fuel_total_gal += fuel_used
                 if fuel_used > 0:
-                    fuel_charge_fl  = fuel_used * fuel_price
-                    fuel_total_gal += fuel_used
                     fuel_str = f"  [{int(fuel_used)}g / ${fuel_charge_fl:,.2f}]"
+                elif fuel_used < 0:
+                    fuel_str = f"  [CREDIT {abs(int(fuel_used))}g / -${abs(fuel_charge_fl):,.2f}]"
                 block_dep_fuel = None  # reset for next block
 
             note_str = f"  — {note}" if note else ""
@@ -201,12 +204,19 @@ def _aircraft_section(inst: TBM, pilot: dict, date_where: str) -> tuple[str, flo
                 f"  D:{dep_str}  A:{arr_str}{fuel_str}{note_str}"
             )
 
-    fuel_charge    = fuel_total_gal * fuel_price
-    subtotal       = flight_charge + fuel_charge
+    fuel_charge = fuel_total_gal * fuel_price
+    subtotal    = flight_charge + fuel_charge
+
+    if fuel_total_gal > 0:
+        fuel_detail = f"  +  ${fuel_charge:,.2f} fuel ({int(fuel_total_gal)}g @ ${fuel_price:.2f}/gal)"
+    elif fuel_total_gal < 0:
+        fuel_detail = f"  -  ${abs(fuel_charge):,.2f} fuel credit ({abs(int(fuel_total_gal))}g @ ${fuel_price:.2f}/gal)"
+    else:
+        fuel_detail = ""
 
     lines.append(
         f"  Subtotal: ${flight_charge:,.2f} flight"
-        + (f"  +  ${fuel_charge:,.2f} fuel ({int(fuel_total_gal)}g @ ${fuel_price:.2f}/gal)" if fuel_total_gal else "")
+        + fuel_detail
         + f"  =  ${subtotal:,.2f}"
     )
 
