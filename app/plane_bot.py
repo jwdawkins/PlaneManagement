@@ -213,6 +213,7 @@ def _fmt_help(plane_name: str, slack_id: str = "") -> str:
         ("`pilot`",                           "Personal flight stats"),
         ("`report`",                          "Aircraft report"),
         ("`delete [log | receipt | squawk]`", "Delete the last entry"),
+        ("`pick`",                            "Recommend aircraft by lowest usage"),
     ]
     p = get_pilot(slack_id)
     if p and p.get("owns"):
@@ -270,6 +271,15 @@ def format_for_slack(raw: str, cmd: str, plane_name: str, slack_id: str = ""):
             else:
                 lines.append(line)
         return ":airplane: *Aircraft Usage Balance*\n" + "\n".join(lines)
+    if cmd0 == "pick":
+        if "is Preferred" in raw:
+            # e.g. "N188CD is Preferred  [N900JV 52%  N188CD 48%]"
+            import re
+            m = re.match(r"(\S+) is Preferred\s+\[(.+)\]", raw.strip())
+            if m:
+                tail, summary = m.group(1), m.group(2)
+                return f":white_check_mark: *{tail} is Preferred*\n_{summary}_"
+        return f":airplane: {raw}"
 
     return _fmt_help(plane_name, slack_id)
 
@@ -313,8 +323,8 @@ def build_handler(
         try:
             plane = PlaneClass()
 
-            # pilot / usage — aggregate across all aircraft by injecting peer instances
-            if text.lower().split()[0] in ("pilot", "usage") and peers:
+            # pilot / usage / pick — aggregate across all aircraft by injecting peer instances
+            if text.lower().split()[0] in ("pilot", "usage", "pick") and peers:
                 plane.peers = [P() for P in peers]
 
             raw_response = plane.process(text, slack_user)

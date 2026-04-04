@@ -120,6 +120,9 @@ class TBM:
             else:
                 msg = self.usage(slack_id)
 
+        elif c0 == "pick" and len(cmd) == 1:
+            msg = self.pick()
+
         else:
             msg = self._help(slack_id)
 
@@ -154,6 +157,7 @@ class TBM:
         p = get_pilot(slack_id)
         if p and p.get("owns"):
             lines += "\nusage"
+        lines += "\npick"
         return lines
 
     # ── status ───────────────────────────────────────────────────────────────
@@ -336,6 +340,50 @@ class TBM:
             msg += f"{tail} [{hrs:.1f}] - {pct:.0f}%\n"
 
         return msg.strip()
+
+    # ── pick (recommend aircraft with lowest non-owner usage) ────────────────
+    def pick(self) -> str:
+        """
+        Available to all pilots.
+        Returns the aircraft with the lowest non-owner usage percentage,
+        recommending it as the preferred choice.
+        """
+        CUTOFF = "2026-03-01"
+        all_flight_types = list({p["flight_type"] for p in _PILOT_CFG["pilots"].values()})
+        all_instances    = [self] + self.peers
+        results          = []
+
+        for inst in all_instances:
+            owner_ft = None
+            for p in _PILOT_CFG["pilots"].values():
+                if p.get("owns") == inst.TABLE:
+                    owner_ft = p["flight_type"]
+                    break
+            if owner_ft is None:
+                continue
+
+            non_owner_types = [ft for ft in all_flight_types if ft != owner_ft]
+            placeholders    = ",".join("?" * len(non_owner_types))
+            cur = inst.con.cursor()
+            cur.execute(
+                f"SELECT sum(valuen) FROM {inst.TABLE} "
+                f"WHERE type IN ({placeholders}) AND date >= ?",
+                (*non_owner_types, CUTOFF),
+            )
+            hrs  = float(cur.fetchone()[0] or 0)
+            tail = inst.TABLE.replace("logs_", "").upper()
+            results.append((tail, hrs))
+
+        if not results:
+            return "No ownership data configured."
+
+        total    = sum(hrs for _, hrs in results)
+        with_pct = [(tail, hrs, (hrs / total * 100) if total > 0 else 0)
+                    for tail, hrs in results]
+
+        preferred = min(with_pct, key=lambda x: x[2])
+        summary   = "  ".join(f"{t} {p:.0f}%" for t, _, p in with_pct)
+        return f"{preferred[0]} is Preferred  [{summary}]"
 
     # ── aircraft report ──────────────────────────────────────────────────────
     def report(self) -> str:
