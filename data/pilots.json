@@ -1,4 +1,7 @@
 {
+  "config": {
+    "rate": 700
+  },
   "pilots": {
     "U0AHRJ7PHNC": {
       "name": "Jerry",

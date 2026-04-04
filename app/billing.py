@@ -59,8 +59,8 @@ from tbm import TBM, _PILOT_CFG, get_pilot_name
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-RATE = 700          # $/hr — hourly billing rate
-_DB  = os.environ.get("DB_PATH")
+_DB   = os.environ.get("DB_PATH")
+_RATE = int(_PILOT_CFG.get("config", {}).get("rate", 700))   # $/hr from pilots.json
 
 
 # ---------------------------------------------------------------------------
@@ -85,19 +85,31 @@ AIRCRAFT = {
 # ---------------------------------------------------------------------------
 # Date helpers
 # ---------------------------------------------------------------------------
-def _date_where(test: bool) -> str:
-    if test:
-        return "date >= date('now','start of month')"
-    return (
-        "date >= date('now','start of month','-1 month') "
-        "AND date < date('now','start of month')"
-    )
+def _default_period() -> datetime:
+    """First day of the previous month."""
+    return (datetime.now().replace(day=1) - relativedelta(months=1))
 
 
-def _report_month(test: bool) -> str:
-    if test:
-        return datetime.now().strftime("%B %Y")
-    return (datetime.now() - relativedelta(months=1)).strftime("%B %Y")
+def _parse_month(month_str: str) -> datetime:
+    """
+    Parse a month string into a datetime for the 1st of that month.
+    Accepts:
+        "April"         — April of the current year
+        "April 2025"    — April 2025
+    """
+    parts = month_str.strip().split()
+    if len(parts) == 1:
+        return datetime.strptime(f"{parts[0]} {datetime.now().year}", "%B %Y")
+    elif len(parts) == 2:
+        return datetime.strptime(month_str.strip(), "%B %Y")
+    raise ValueError(f"Invalid month format {month_str!r}. Use 'April' or 'April 2025'.")
+
+
+def _date_where(period: datetime) -> str:
+    """SQL WHERE clause covering the full calendar month of period."""
+    start = period.strftime("%Y-%m-%d")
+    end   = (period + relativedelta(months=1)).strftime("%Y-%m-%d")
+    return f"date >= '{start}' AND date < '{end}'"
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +134,7 @@ def _aircraft_section(inst: TBM, pilot: dict, date_where: str) -> tuple[str, flo
         (flight_type,),
     )
     flight_hrs = float(cur.fetchone()[0] or 0)
-    flight_charge = flight_hrs * RATE
+    flight_charge = flight_hrs * _RATE
 
     lines = []
     lines.append(f"{tail} FLIGHT TIME: {flight_hrs:.1f} hrs  [${flight_charge:,.2f}]")
@@ -255,14 +267,17 @@ def _squawks_section(inst: TBM, date_where: str) -> str:
 # ---------------------------------------------------------------------------
 # Main report builder
 # ---------------------------------------------------------------------------
-def build_report(pilot_name: str, aircraft: list, test: bool = False) -> str:
+def build_report(pilot_name: str, aircraft: list, period: datetime = None) -> str:
     """
     Build a full billing report for the named pilot across the given aircraft list.
 
     pilot_name : case-insensitive name matching pilots.json
     aircraft   : list of TBM subclasses to bill against
-    test       : if True, use current month; otherwise previous month
+    period     : datetime for the 1st of the target month; defaults to previous month
     """
+    if period is None:
+        period = _default_period()
+
     # Resolve pilot from config
     pilot = None
     for p in _PILOT_CFG["pilots"].values():
@@ -273,8 +288,8 @@ def build_report(pilot_name: str, aircraft: list, test: bool = False) -> str:
     if pilot is None:
         return f"ERROR: Pilot '{pilot_name}' not found in pilots.json"
 
-    date_where   = _date_where(test)
-    month_label  = _report_month(test)
+    date_where  = _date_where(period)
+    month_label = period.strftime("%B %Y")
 
     separator = "─" * 48
 
@@ -299,8 +314,8 @@ def build_report(pilot_name: str, aircraft: list, test: bool = False) -> str:
         lines.append("")
 
         total_flight_hrs    += f_hrs
-        total_flight_charge += f_hrs * RATE
-        total_fuel_charge   += subtotal - (f_hrs * RATE) - receipts
+        total_flight_charge += f_hrs * _RATE
+        total_fuel_charge   += subtotal - (f_hrs * _RATE) - receipts
         total_receipts      += receipts
 
         squawk_sections.append(_squawks_section(inst, date_where))
@@ -310,10 +325,7 @@ def build_report(pilot_name: str, aircraft: list, test: bool = False) -> str:
     # ── Grand total ───────────────────────────────────────────────────────
     grand_total = total_flight_charge + total_fuel_charge + total_receipts
     lines.append(separator)
-    lines.append(
-        f"BALANCE DUE:  ${grand_total:,.2f}"
-        f"  ({total_flight_hrs:.1f} hrs across {len(aircraft)} aircraft)"
-    )
+    lines.append(f"BALANCE DUE:  ${grand_total:,.2f}")
     lines.append(separator)
 
     # ── Squawks ───────────────────────────────────────────────────────────
@@ -341,9 +353,20 @@ def main():
     parser.add_argument("--pilot",    required=True, help="Pilot name (e.g. jerry)")
     parser.add_argument("--aircraft", nargs="+",     help="Aircraft tail numbers (default: all)",
                         default=list(AIRCRAFT.keys()))
-    parser.add_argument("--test",     action="store_true", help="Use current month instead of previous")
+    parser.add_argument("--month",    default=None,
+                        help="Month to bill: 'April' (current year) or 'April 2025' (defaults to previous month)")
     parser.add_argument("--send",     action="store_true", help="Email report to pilot")
     args = parser.parse_args()
+
+    # Resolve billing period
+    if args.month:
+        try:
+            period = _parse_month(args.month)
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
+    else:
+        period = _default_period()
 
     # Validate aircraft
     unknown = [a for a in args.aircraft if a.upper() not in AIRCRAFT]
@@ -352,12 +375,12 @@ def main():
         sys.exit(1)
 
     plane_classes = [AIRCRAFT[a.upper()] for a in args.aircraft]
-    report        = build_report(args.pilot, plane_classes, test=args.test)
+    report        = build_report(args.pilot, plane_classes, period=period)
 
     print(report)
 
     if args.send:
-        month = _report_month(args.test)
+        month = period.strftime("%B %Y")
         subject = f"Billing Report — {args.pilot.title()} — {month}"
         results = send_to_pilot(args.pilot, subject, report)
         if results:
