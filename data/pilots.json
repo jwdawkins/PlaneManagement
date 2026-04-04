@@ -4,19 +4,22 @@
       "name": "Jerry",
       "flight_type": 0,
       "receipt_type": 5,
-      "hobbs_offset": 1266
+      "hobbs_offset": 1266,
+      "emails": ["jdawkins@gmail.com"]
     },
-    "RODNEY_SLACK_ID": {
+    "U0ARKQJU932": {
       "name": "Rodney",
       "flight_type": 1,
       "receipt_type": 11,
-      "hobbs_offset": 0
+      "hobbs_offset": 0,
+      "emails": []
     },
-    "MAT_SLACK_ID": {
+    "U0AQR19CH44": {
       "name": "Mat",
       "flight_type": 7,
       "receipt_type": 12,
-      "hobbs_offset": 0
+      "hobbs_offset": 0,
+      "emails": []
     }
   },
   "ferry_pilot": {
