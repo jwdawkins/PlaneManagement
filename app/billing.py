@@ -145,20 +145,35 @@ def _aircraft_section(inst: TBM, pilot: dict, date_where: str) -> tuple[str, flo
             for row in cur.fetchall()
         ]
 
-        for flight_date, f_uid, f_hrs, note in flights:
+        for idx, (flight_date, f_uid, f_hrs, note) in enumerate(flights):
+            is_first = idx == 0
+            is_last  = idx == len(flights) - 1
+
             # hobbs uid = flight-type uid + 3
             hobbs_uid  = f_uid + 3
             prev_hobbs = inst.getPreviousFlightUid(hobbs_uid)
+            next_hobbs = inst.getNextFlightUid(hobbs_uid)
 
-            dep_fuel = inst.getFlightFuel(prev_hobbs) if prev_hobbs else None
+            # Departure fuel: show only on first flight OR if fuel was added away
+            if prev_hobbs and (is_first or inst.isFuelAwayFlight(prev_hobbs)):
+                dep_fuel = inst.getFlightFuel(prev_hobbs)
+                dep_str  = f"{int(dep_fuel)}"
+            else:
+                dep_fuel = None
+                dep_str  = "--"
+
+            # Arrival fuel: show only on last flight OR if fuel was added away on next leg
             arr_fuel = inst.getFlightFuel(hobbs_uid)
+            if is_last or inst.isFuelAwayFlight(next_hobbs) if next_hobbs else is_last:
+                arr_str = f"{int(arr_fuel)}"
+            else:
+                arr_fuel = None
+                arr_str  = "--"
 
-            dep_str = f"{int(dep_fuel)}" if dep_fuel is not None else "--"
-            arr_str = f"{int(arr_fuel)}"
-
+            # Fuel used only when both departure and arrival are real values
             fuel_used = 0.0
             fuel_str  = ""
-            if dep_fuel is not None and dep_fuel > arr_fuel:
+            if dep_fuel is not None and arr_fuel is not None and dep_fuel > arr_fuel:
                 fuel_used      = dep_fuel - arr_fuel
                 fuel_charge_fl = fuel_used * fuel_price
                 fuel_total_gal += fuel_used
