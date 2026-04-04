@@ -145,39 +145,43 @@ def _aircraft_section(inst: TBM, pilot: dict, date_where: str) -> tuple[str, flo
             for row in cur.fetchall()
         ]
 
-        for idx, (flight_date, f_uid, f_hrs, note) in enumerate(flights):
-            is_first = idx == 0
-            is_last  = idx == len(flights) - 1
+        block_dep_fuel = None  # departure fuel for the current pilot "block"
+        last_f_uid     = flights[-1][1]
 
-            # hobbs uid = flight-type uid + 3
+        for flight_date, f_uid, f_hrs, note in flights:
             hobbs_uid  = f_uid + 3
             prev_hobbs = inst.getPreviousFlightUid(hobbs_uid)
             next_hobbs = inst.getNextFlightUid(hobbs_uid)
 
-            # Departure fuel: show only on first flight OR if fuel was added away
-            if prev_hobbs and (is_first or inst.isFuelAwayFlight(prev_hobbs)):
-                dep_fuel = inst.getFlightFuel(prev_hobbs)
-                dep_str  = f"{int(dep_fuel)}"
-            else:
-                dep_fuel = None
-                dep_str  = "--"
+            # Show departure when the previous flight was a different pilot
+            # (plane is being handed TO this pilot) or there is no previous flight.
+            prev_pilot = inst.getFlightPilot(prev_hobbs) if prev_hobbs else None
+            show_dep   = prev_pilot != flight_type
 
-            # Arrival fuel: show only on last flight OR if fuel was added away on next leg
+            # Show arrival when the next flight is a different pilot
+            # (plane is being handed BACK), there is no next flight, OR this is
+            # the last flight in the billing period (next flight may be outside window).
+            next_pilot = inst.getFlightPilot(next_hobbs) if next_hobbs else None
+            show_arr   = (next_pilot != flight_type) or (f_uid == last_f_uid)
+
+            if show_dep:
+                block_dep_fuel = inst.getFlightFuel(prev_hobbs) if prev_hobbs else None
+                dep_str = f"{int(block_dep_fuel)}" if block_dep_fuel is not None else "--"
+            else:
+                dep_str = "--"
+
             arr_fuel = inst.getFlightFuel(hobbs_uid)
-            if is_last or inst.isFuelAwayFlight(next_hobbs) if next_hobbs else is_last:
-                arr_str = f"{int(arr_fuel)}"
-            else:
-                arr_fuel = None
-                arr_str  = "--"
+            arr_str  = f"{int(arr_fuel)}" if show_arr else "--"
 
-            # Fuel used only when both departure and arrival are real values
-            fuel_used = 0.0
-            fuel_str  = ""
-            if dep_fuel is not None and arr_fuel is not None and dep_fuel > arr_fuel:
-                fuel_used      = dep_fuel - arr_fuel
-                fuel_charge_fl = fuel_used * fuel_price
-                fuel_total_gal += fuel_used
-                fuel_str = f"  [{int(fuel_used)}g / ${fuel_charge_fl:,.2f}]"
+            # Fuel used = departure of this block minus arrival, only when both are known
+            fuel_str = ""
+            if show_arr and block_dep_fuel is not None:
+                fuel_used      = block_dep_fuel - arr_fuel
+                if fuel_used > 0:
+                    fuel_charge_fl  = fuel_used * fuel_price
+                    fuel_total_gal += fuel_used
+                    fuel_str = f"  [{int(fuel_used)}g / ${fuel_charge_fl:,.2f}]"
+                block_dep_fuel = None  # reset for next block
 
             note_str = f"  — {note}" if note else ""
             lines.append(
