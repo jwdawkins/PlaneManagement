@@ -25,6 +25,29 @@ from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# Load .env before any other imports so PILOTS_JSON / DB_PATH are set
+# in time for tbm.py's module-level _load_pilots() call.
+# ---------------------------------------------------------------------------
+_env_file = Path(__file__).parent.parent / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
+# Fall back to sibling data/ directory if PILOTS_JSON still not set
+# (covers running directly from the app/ folder without a .env)
+os.environ.setdefault(
+    "PILOTS_JSON",
+    str(Path(__file__).parent.parent / "data" / "pilots.json"),
+)
+os.environ.setdefault(
+    "DB_PATH",
+    str(Path(__file__).parent.parent / "data" / "logbook.db"),
+)
+
+# ---------------------------------------------------------------------------
 # Allow imports from the same directory when run directly
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).parent))
@@ -37,7 +60,7 @@ from tbm import TBM, _PILOT_CFG, get_pilot_name
 # Config
 # ---------------------------------------------------------------------------
 RATE = 700          # $/hr — hourly billing rate
-_DB  = os.environ.get("DB_PATH", "/data/logbook.db")
+_DB  = os.environ.get("DB_PATH")
 
 
 # ---------------------------------------------------------------------------
