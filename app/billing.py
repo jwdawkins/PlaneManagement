@@ -277,68 +277,85 @@ def _squawks_section(inst: TBM, date_where: str) -> str:
 # ---------------------------------------------------------------------------
 # Main report builder
 # ---------------------------------------------------------------------------
-def build_report(pilot_name: str, aircraft: list, period: datetime = None) -> str:
-    """
-    Build a full billing report for the named pilot across the given aircraft list.
+def _resolve_pilot(name: str) -> dict | None:
+    """Look up a pilot dict by name (case-insensitive) from pilots.json."""
+    for p in _PILOT_CFG["pilots"].values():
+        if p["name"].lower() == name.lower():
+            return p
+    return None
 
-    pilot_name : case-insensitive name matching pilots.json
-    aircraft   : list of TBM subclasses to bill against
-    period     : datetime for the 1st of the target month; defaults to previous month
+
+def build_report(pilot_names: list[str] | str, aircraft: list, period: datetime = None) -> str:
+    """
+    Build a billing report for one or more pilots across the given aircraft list.
+
+    pilot_names : pilot name or list of pilot names (case-insensitive)
+    aircraft    : list of TBM subclasses to bill against
+    period      : datetime for the 1st of the target month; defaults to previous month
     """
     if period is None:
         period = _default_period()
 
-    # Resolve pilot from config
-    pilot = None
-    for p in _PILOT_CFG["pilots"].values():
-        if p["name"].lower() == pilot_name.lower():
-            pilot = p
-            break
+    if isinstance(pilot_names, str):
+        pilot_names = [pilot_names]
 
-    if pilot is None:
-        return f"ERROR: Pilot '{pilot_name}' not found in pilots.json"
+    # Resolve all pilots up front
+    pilots = []
+    for name in pilot_names:
+        p = _resolve_pilot(name)
+        if p is None:
+            return f"ERROR: Pilot '{name}' not found in pilots.json"
+        pilots.append(p)
 
     date_where  = _date_where(period)
     month_label = period.strftime("%B %Y")
+    separator   = "─" * 48
 
-    separator = "─" * 48
-
+    # Title: list all pilot names
+    pilot_label = ", ".join(p["name"].title() for p in pilots)
     lines = [
-        f"TBM Billing Report — {pilot['name'].title()} — {month_label}",
+        f"TBM Billing Report — {pilot_label} — {month_label}",
         separator,
         "",
     ]
 
-    total_flight_hrs    = 0.0
-    total_flight_charge = 0.0
-    total_fuel_charge   = 0.0
-    total_receipts      = 0.0
-    squawk_sections     = []
+    grand_total     = 0.0
+    squawk_sections = []   # collected once per aircraft, shown at the end
 
-    for PlaneClass in aircraft:
-        inst = PlaneClass()
+    for pilot in pilots:
+        pilot_total = 0.0
 
-        section, f_hrs, subtotal, receipts = _aircraft_section(inst, pilot, date_where)
-        lines.append(section)
-        lines.append("")
+        # Per-pilot header only when billing multiple pilots
+        if len(pilots) > 1:
+            lines.append(f"── {pilot['name'].upper()} ──")
 
-        total_flight_hrs    += f_hrs
-        total_flight_charge += f_hrs * _RATE
-        total_fuel_charge   += subtotal - (f_hrs * _RATE) - receipts
-        total_receipts      += receipts
+        for PlaneClass in aircraft:
+            inst = PlaneClass()
+            section, f_hrs, subtotal, receipts = _aircraft_section(inst, pilot, date_where)
+            lines.append(section)
+            lines.append("")
+            pilot_total += subtotal
 
-        squawk_sections.append(_squawks_section(inst, date_where))
+            # Collect squawk sections on the first pilot pass only
+            if pilot is pilots[0]:
+                squawk_sections.append(_squawks_section(inst, date_where))
 
-        inst.con.close()
+            inst.con.close()
+
+        # Per-pilot subtotal only when billing multiple pilots
+        if len(pilots) > 1:
+            lines.append(f"  {pilot['name'].upper()} SUBTOTAL:  ${pilot_total:,.2f}")
+            lines.append("")
+
+        grand_total += pilot_total
 
     # ── Grand total ───────────────────────────────────────────────────────
-    grand_total = total_flight_charge + total_fuel_charge + total_receipts
     lines.append(separator)
     lines.append(f"BALANCE DUE:  ${grand_total:,.2f}")
     lines.append(separator)
 
-    # ── Squawks ───────────────────────────────────────────────────────────
-    if any(squawk_sections):
+    # ── Squawks (once per aircraft) ───────────────────────────────────────
+    if squawk_sections:
         lines.append("")
         lines.extend(squawk_sections)
 
@@ -359,7 +376,7 @@ def main():
                 os.environ.setdefault(k.strip(), v.strip())
 
     parser = argparse.ArgumentParser(description="PlaneManagement billing report")
-    parser.add_argument("--pilot",    required=True, help="Pilot name (e.g. jerry)")
+    parser.add_argument("--pilot",    required=True, nargs="+", help="One or more pilot names (e.g. jerry rodney)")
     parser.add_argument("--aircraft", nargs="+",     help="Aircraft tail numbers (default: all)",
                         default=list(AIRCRAFT.keys()))
     parser.add_argument("--month",    default=None,
@@ -390,8 +407,9 @@ def main():
     print(report)
 
     if args.send:
-        month   = period.strftime("%B %Y")
-        subject = f"TBM Billing Report — {args.pilot.title()} — {month}"
+        month       = period.strftime("%B %Y")
+        pilot_label = ", ".join(n.title() for n in args.pilot)
+        subject     = f"TBM Billing Report — {pilot_label} — {month}"
         results = send_to_pilot(args.send, subject, report)
         if results:
             for name, ok in results.items():
