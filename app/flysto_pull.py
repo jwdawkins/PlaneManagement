@@ -521,10 +521,28 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
     header = f"\u2708\ufe0f *AirSync \u2014 N900JV \u2014 {date_str}*"
     if not is_jerry:
         header += f"  [{pilot_name}]"
+    origin = flight.get("from", "")
+    dest   = flight.get("to", "")
+    route  = f"{origin} - {dest}" if origin or dest else f"N900JV  {date_str}"
+
     blocks = []
 
-    # ── Header ────────────────────────────────────────────────────────────────
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
+    # ── Route button (top) ────────────────────────────────────────────────────
+    top_elements = []
+    if url:
+        top_elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": route, "emoji": False},
+            "url": url,
+        })
+    if not is_jerry and pilot_name:
+        top_elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": pilot_name, "emoji": False},
+            "action_id": "pilot_label",
+        })
+    if top_elements:
+        blocks.append({"type": "actions", "elements": top_elements})
 
     # ── Flags ─────────────────────────────────────────────────────────────────
     if flags:
@@ -561,19 +579,8 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
                 fields.append({"type": "mrkdwn", "text": "  ".join(val_parts) or "\u2014"})
             blocks.append({"type": "section", "fields": fields})
 
-    # ── Button ────────────────────────────────────────────────────────────────
-    if url:
-        blocks.append({
-            "type": "actions",
-            "elements": [{
-                "type": "button",
-                "text": {"type": "plain_text", "text": "View on Flysto", "emoji": True},
-                "url": url,
-            }],
-        })
-
     return {
-        "text": f"AirSync \u2014 N900JV \u2014 {date_str}",
+        "text": route,
         "blocks": blocks,
     }
 
@@ -669,6 +676,8 @@ def main():
         detail   = scrape_log_detail(page, f["id"])
         detail["id"]   = f["id"]
         detail["date"] = f["date"]
+        detail["from"] = f.get("from", "")
+        detail["to"]   = f.get("to", "")
 
         browser.close()
 
