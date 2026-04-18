@@ -521,38 +521,47 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
     header = f"\u2708\ufe0f *AirSync \u2014 N900JV \u2014 {date_str}*"
     if not is_jerry:
         header += f"  [{pilot_name}]"
-    lines = [header]
+    blocks = []
 
+    # ── Header ────────────────────────────────────────────────────────────────
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": header}})
+
+    # ── Flags ─────────────────────────────────────────────────────────────────
     if flags:
-        lines.append("")
-        lines.append(":warning: *FLAGS*")
-        for flag in flags:
-            lines.append(f">{flag}")
+        flag_text = ":warning: *FLAGS*\n" + "\n".join(f">{f}" for f in flags)
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": flag_text}})
 
+    # ── Approach ──────────────────────────────────────────────────────────────
     if score_pct is not None or params:
-        lines.append("")
+        blocks.append({"type": "divider"})
+
         score_str = ""
         if score_pct is not None:
-            score_str = f"{score_pct}%"
+            score_str = f"  {score_pct}%"
             if score_earned is not None and score_total is not None:
                 score_str += f"  ({score_earned}/{score_total} pts)"
-        lines.append(f":clipboard: *APPROACH{' \u2014 ' + score_str if score_str else ''}*")
-        for p in params:
-            result = p.get("result", "")
-            icon   = "\u2705" if result == "PASS" else ("\u274c" if result == "FAIL" else "\u2139\ufe0f")
-            parts  = []
-            if p.get("value"):
-                parts.append(p["value"])
-            if p.get("required"):
-                parts.append(f"req {p['required']}")
-            detail = "  _" + "  ".join(parts) + "_" if parts else ""
-            lines.append(f">{icon} {p['parameter']}{detail}")
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f":clipboard: *APPROACH{score_str}*"},
+        })
 
-    body = "\n".join(lines)
+        # Two-column fields layout: param name (left) | value + requirement (right)
+        # Slack allows up to 10 fields per section → 5 params per block
+        for i in range(0, len(params), 5):
+            fields = []
+            for p in params[i:i + 5]:
+                result = p.get("result", "")
+                icon   = "\u2705" if result == "PASS" else ("\u274c" if result == "FAIL" else "\u2139\ufe0f")
+                val_parts = []
+                if p.get("value"):
+                    val_parts.append(p["value"])
+                if p.get("required"):
+                    val_parts.append(f"_req {p['required']}_")
+                fields.append({"type": "mrkdwn", "text": f"{icon}  *{p['parameter']}*"})
+                fields.append({"type": "mrkdwn", "text": "  ".join(val_parts) or "\u2014"})
+            blocks.append({"type": "section", "fields": fields})
 
-    blocks = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": body}},
-    ]
+    # ── Button ────────────────────────────────────────────────────────────────
     if url:
         blocks.append({
             "type": "actions",
@@ -564,7 +573,7 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
         })
 
     return {
-        "text": f"AirSync \u2014 N900JV \u2014 {date_str}",  # fallback for notifications
+        "text": f"AirSync \u2014 N900JV \u2014 {date_str}",
         "blocks": blocks,
     }
 
