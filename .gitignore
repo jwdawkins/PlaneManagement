@@ -1,10 +1,16 @@
 # Environment — contains live API tokens, never commit
 .env
+app/flysto.env
 
 # SQLite database
 data/logbook.db
 data/logbook.db-shm
 data/logbook.db-wal
+
+# AirSync transient output
+data/flight_logs.json
+data/flysto_cron.log
+app/flight_logs.json
 
 # Python
 __pycache__/

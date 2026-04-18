@@ -69,7 +69,7 @@ class TBM:
         if c0 == "status" and len(cmd) == 1:
             msg = self.status()
 
-        elif c0 == "log" and len(cmd) >= 4:
+        elif c0 == "log" and (len(cmd) >= 4 or len(cmd) == 2):
             msg = self.log(cmd, slack_id)
 
         elif c0 == "ferry" and len(cmd) == 4:
@@ -142,6 +142,7 @@ class TBM:
         lines = (
             "status\n"
             "ferry [FUEL L] [FUEL R] [HOBBS]\n"
+            "log [HOBBS]\n"
             "log [FUEL L] [FUEL R] [HOBBS] [NOTE]\n"
             "delete [log | receipt | squawk]\n"
             "receipt [AMT] [NOTE]\n"
@@ -197,10 +198,17 @@ class TBM:
                 return "Unknown pilot — Slack ID not found in pilots.json"
             flight_type = p["flight_type"]
 
-        l_fuel = float(cmd[1])
-        r_fuel = float(cmd[2])
-        hobbs  = float(cmd[3])
-        note   = " ".join(cmd[4:])
+        if len(cmd) == 2:
+            # log HOBBS — fuel placeholders; AirSync will fill in real values
+            l_fuel = 0.0
+            r_fuel = 0.0
+            hobbs  = float(cmd[1])
+            note   = ""
+        else:
+            l_fuel = float(cmd[1])
+            r_fuel = float(cmd[2])
+            hobbs  = float(cmd[3])
+            note   = " ".join(cmd[4:])
 
         prev_hobbs = float(self.sqlReadLatest(9))
         flight_time = hobbs - prev_hobbs
