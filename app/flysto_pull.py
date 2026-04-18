@@ -518,16 +518,11 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
         header += f"  [{pilot_name}]"
     lines = [header]
 
-    if l_fuel is not None or r_fuel is not None:
-        l_str = f"{l_fuel:.0f}g" if l_fuel is not None else "\u2014"
-        r_str = f"{r_fuel:.0f}g" if r_fuel is not None else "\u2014"
-        lines.append(f":fuelpump: Fuel updated \u2192 L: {l_str}  R: {r_str}")
-
     if flags:
         lines.append("")
-        lines.append("\U0001f6a9 *FLAGS*")
+        lines.append(":warning: *FLAGS*")
         for flag in flags:
-            lines.append(f"  \u2022 {flag}")
+            lines.append(f">{flag}")
 
     if score_pct is not None or params:
         lines.append("")
@@ -536,7 +531,7 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
             score_str = f"{score_pct}%"
             if score_earned is not None and score_total is not None:
                 score_str += f"  ({score_earned}/{score_total} pts)"
-        lines.append(f"\U0001f4ca *APPROACH{' \u2014 ' + score_str if score_str else ''}*")
+        lines.append(f":clipboard: *APPROACH{' \u2014 ' + score_str if score_str else ''}*")
         for p in params:
             result = p.get("result", "")
             icon   = "\u2705" if result == "PASS" else ("\u274c" if result == "FAIL" else "\u2139\ufe0f")
@@ -546,7 +541,7 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
             if p.get("required"):
                 parts.append(f"req {p['required']}")
             detail = "  _" + "  ".join(parts) + "_" if parts else ""
-            lines.append(f"  {icon} {p['parameter']}{detail}")
+            lines.append(f">{icon} {p['parameter']}{detail}")
 
     if url:
         lines.append("")
