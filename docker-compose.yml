@@ -6,6 +6,6 @@ services:
     env_file: .env
     environment:
       - PILOTS_JSON=/data/pilots.json
-      - FLYSTO_OUTPUT=/data/flight_logs.json
+      - AIRSYNC_PENDING=/data/airsync_pending.json
     volumes:
       - ./data:/data

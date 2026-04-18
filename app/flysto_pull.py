@@ -41,8 +41,6 @@ def load_dotenv(path="flysto.env"):
         pass
 
 
-load_dotenv("flysto.env")
-
 BASE_URL = "https://www.flysto.net"
 AIRCRAFT = os.getenv("FLYSTO_AIRCRAFT", "6rp5nv")
 
@@ -417,30 +415,219 @@ def update_env(key: str, value: str, path: str = "flysto.env") -> None:
         f.writelines(new_lines)
 
 
+# ---------------------------------------------------------------------------
+# AirSync — send Slack notification and update SQLite directly from liono
+# ---------------------------------------------------------------------------
+import sqlite3
+import urllib.request
+import urllib.error
+
+_BASE_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DATA_DIR        = os.path.join(_BASE_DIR, "data")
+_PENDING_FILE    = os.path.join(_DATA_DIR, "airsync_pending.json")
+_LIONO_DB        = os.path.join(_DATA_DIR, "logbook.db")
+_LIONO_PILOTS    = os.path.join(_DATA_DIR, "pilots.json")
+_APP_ENV         = os.path.join(_BASE_DIR, ".env")
+_JERRY_ID        = "U0AHRJ7PHNC"
+_AIRSYNC_TIMEOUT = 600  # 10 minutes
+
+
+def _load_pending() -> dict | None:
+    try:
+        with open(_PENDING_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _clear_pending() -> None:
+    try:
+        os.remove(_PENDING_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def _slack_api(token: str, method: str, payload: dict) -> dict:
+    data = json.dumps(payload).encode()
+    req  = urllib.request.Request(
+        f"https://slack.com/api/{method}",
+        data=data,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def _open_dm(token: str, user_id: str) -> str:
+    result = _slack_api(token, "conversations.open", {"users": user_id})
+    return result["channel"]["id"]
+
+
+def _post(token: str, channel: str, text: str) -> None:
+    result = _slack_api(token, "chat.postMessage", {"channel": channel, "text": text})
+    if not result.get("ok"):
+        print(f"Slack post failed: {result.get('error')}")
+
+
+def _update_fuel_sqlite(flight: dict, slack_user: str, table: str) -> None:
+    stats  = flight.get("flight_stats", {})
+    l_fuel = stats.get("end_fuel_left_usg")
+    r_fuel = stats.get("end_fuel_right_usg")
+    if l_fuel is None and r_fuel is None:
+        print("AirSync: no fuel data in Flysto response — SQLite not updated.")
+        return
+    from datetime import datetime as _dt
+    con = sqlite3.connect(_LIONO_DB)
+    now = _dt.now()
+    if l_fuel is not None:
+        con.execute(f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
+                    (now, 6, l_fuel, slack_user))
+    if r_fuel is not None:
+        con.execute(f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
+                    (now, 8, r_fuel, slack_user))
+    con.commit()
+    con.close()
+    print(f"AirSync: fuel updated in SQLite — L={l_fuel} R={r_fuel}")
+
+
+def _load_pilots_cfg() -> dict:
+    try:
+        with open(_LIONO_PILOTS) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
+    pilot_cfg   = pilots_cfg.get("pilots", {}).get(slack_user, {})
+    pilot_name  = pilot_cfg.get("name", slack_user)
+    is_jerry    = slack_user == _JERRY_ID
+    date_str    = flight.get("date", "?")
+    url         = flight.get("url", "")
+    flags       = flight.get("flags", [])
+    score_pct   = flight.get("score_pct")
+    score_earned = flight.get("score_earned")
+    score_total  = flight.get("score_total")
+    params      = flight.get("approach_params", [])
+    stats       = flight.get("flight_stats", {})
+    l_fuel      = stats.get("end_fuel_left_usg")
+    r_fuel      = stats.get("end_fuel_right_usg")
+
+    header = f"\u2708\ufe0f *AirSync \u2014 N900JV \u2014 {date_str}*"
+    if not is_jerry:
+        header += f"  [{pilot_name}]"
+    lines = [header]
+
+    if l_fuel is not None or r_fuel is not None:
+        l_str = f"{l_fuel:.0f}g" if l_fuel is not None else "\u2014"
+        r_str = f"{r_fuel:.0f}g" if r_fuel is not None else "\u2014"
+        lines.append(f":fuelpump: Fuel updated \u2192 L: {l_str}  R: {r_str}")
+
+    if flags:
+        lines.append("")
+        lines.append("\U0001f6a9 *FLAGS*")
+        for flag in flags:
+            lines.append(f"  \u2022 {flag}")
+
+    if score_pct is not None or params:
+        lines.append("")
+        score_str = ""
+        if score_pct is not None:
+            score_str = f"{score_pct}%"
+            if score_earned is not None and score_total is not None:
+                score_str += f"  ({score_earned}/{score_total} pts)"
+        lines.append(f"\U0001f4ca *APPROACH{' \u2014 ' + score_str if score_str else ''}*")
+        for p in params:
+            result = p.get("result", "")
+            icon   = "\u2705" if result == "PASS" else ("\u274c" if result == "FAIL" else "\u2139\ufe0f")
+            parts  = []
+            if p.get("value"):
+                parts.append(p["value"])
+            if p.get("required"):
+                parts.append(f"req {p['required']}")
+            detail = "  _" + "  ".join(parts) + "_" if parts else ""
+            lines.append(f"  {icon} {p['parameter']}{detail}")
+
+    if url:
+        lines.append("")
+        lines.append(f"<{url}|View on Flysto>")
+
+    return "\n".join(lines)
+
+
+def _airsync_notify(flight: dict, pending: dict, token: str) -> None:
+    pilots_cfg = _load_pilots_cfg()
+    slack_user = pending["slack_user"]
+    channel_id = pending["channel_id"]
+    is_jerry   = slack_user == _JERRY_ID
+
+    msg = _fmt_airsync_msg(flight, slack_user, pilots_cfg)
+
+    if is_jerry:
+        _post(token, channel_id, msg)
+    else:
+        # DM Jerry with the full details
+        dm_channel = _open_dm(token, _JERRY_ID)
+        _post(token, dm_channel, msg)
+
+
+def _airsync_notify_timeout(pending: dict, token: str) -> None:
+    try:
+        dm_channel = _open_dm(token, _JERRY_ID)
+        _post(token, dm_channel,
+              ":warning: *AirSync timed out* \u2014 no new flight found on Flysto after 10 minutes.")
+    except Exception as e:
+        print(f"AirSync: failed to send timeout DM: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
-    email   = os.getenv("FLYSTO_EMAIL")
+    # Load flysto credentials
+    load_dotenv("flysto.env")
+    # Load main app .env for Slack tokens
+    load_dotenv(_APP_ENV)
+
+    # --- AirSync gate: only run if a log is pending ---
+    pending = _load_pending()
+    if pending is None:
+        print("No AirSync pending — exiting.")
+        return
+
+    import time as _time
+    created_at = pending.get("created_at", 0)
+    age        = _time.time() - created_at
+    token      = os.getenv("N900JV_BOT_TOKEN", "")
+
+    if age > _AIRSYNC_TIMEOUT:
+        print(f"AirSync: pending request timed out ({age:.0f}s old).")
+        _airsync_notify_timeout(pending, token)
+        _clear_pending()
+        return
+
+    # Normal path: check for new flight on Flysto
+    email    = os.getenv("FLYSTO_EMAIL")
     password = os.getenv("FLYSTO_PASSWORD")
     last_id  = os.getenv("FLYSTO_LOG_ID", "")
 
     if not email or not password:
-        print("Error: FLYSTO_EMAIL and FLYSTO_PASSWORD must be set in your .env file.")
+        print("Error: FLYSTO_EMAIL and FLYSTO_PASSWORD must be set.")
         sys.exit(1)
     if not last_id:
-        print("Error: FLYSTO_LOG_ID must be set in your .env file.")
+        print("Error: FLYSTO_LOG_ID must be set.")
         sys.exit(1)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page    = browser.new_page()
 
         print(f"Logging in as {email}...")
         login(page, email, password)
 
-        # Scrape recent flight list (180-day window) — newest first
-        from_date = (date.today() - timedelta(days=180)).strftime("%Y-%m-%d")
-        flights = scrape_flights(page, from_date)
+        from_date   = (date.today() - timedelta(days=180)).strftime("%Y-%m-%d")
+        flights     = scrape_flights(page, from_date)
 
-        # Everything before last_id in the list is newer
         new_flights = []
         for f in flights:
             if f["id"] == last_id:
@@ -449,29 +636,33 @@ def main():
 
         if not new_flights:
             browser.close()
-            print("No new flights found.")
-            save_json([{"result": False}])
-            return
+            print("No new flights found yet — will retry next minute.")
+            return   # leave pending file in place
 
-        print(f"Found {len(new_flights)} new flight(s) — processing latest only.")
+        print(f"Found {len(new_flights)} new flight(s) — processing latest.")
 
-        # Only process the most recent (first in newest-first list)
-        results = []
-        for f in new_flights[:1]:
-            print(f"Scraping detail for log {f['id']} ({f['date']})...")
-            detail = scrape_log_detail(page, f["id"])
-            detail["id"]   = f["id"]
-            detail["date"] = f["date"]
-            results.append(detail)
+        f        = new_flights[0]
+        print(f"Scraping detail for log {f['id']} ({f['date']})...")
+        detail   = scrape_log_detail(page, f["id"])
+        detail["id"]   = f["id"]
+        detail["date"] = f["date"]
 
         browser.close()
 
-        # Update .env so next run uses the newest flight as baseline
-        newest_id = new_flights[0]["id"]
-        update_env("FLYSTO_LOG_ID", newest_id)
-        print(f"Updated FLYSTO_LOG_ID → {newest_id}")
+        # Advance the baseline ID so next cron run ignores this flight
+        update_env("FLYSTO_LOG_ID", f["id"])
+        print(f"Updated FLYSTO_LOG_ID → {f['id']}")
 
-        save_json(results)
+        # Update SQLite fuel directly on liono
+        _update_fuel_sqlite(detail, pending["slack_user"], pending["table"])
+
+        # Send Slack notification
+        _airsync_notify(detail, pending, token)
+        print("AirSync: Slack notification sent.")
+
+        # Done — remove pending file so cron becomes a no-op again
+        _clear_pending()
+        print("AirSync: pending file cleared.")
 
 
 if __name__ == "__main__":

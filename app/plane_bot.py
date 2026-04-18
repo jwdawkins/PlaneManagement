@@ -23,15 +23,13 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import threading
 import time
-from datetime import datetime
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from tbm import TBM, get_pilot_name
+from tbm import TBM
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,13 +38,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# AirSync constants
+# AirSync — pending file path (written by bot, read by flysto_pull.py on liono)
 # ---------------------------------------------------------------------------
-JERRY_SLACK_ID = "U0AHRJ7PHNC"
-AIRSYNC_JSON   = os.environ.get("FLYSTO_OUTPUT", "/data/flight_logs.json")
-
-# One active AirSync worker at a time (N900JV only)
-_airsync_active = threading.Event()
+AIRSYNC_PENDING = os.environ.get("AIRSYNC_PENDING", "/data/airsync_pending.json")
 
 # ---------------------------------------------------------------------------
 # Aircraft subclasses — only DB + TABLE differ; all logic lives in TBM
@@ -238,174 +232,6 @@ def _fmt_help(plane_name: str, slack_id: str = "") -> str:
     return msg.strip()
 
 
-# ---------------------------------------------------------------------------
-# AirSync helpers
-# ---------------------------------------------------------------------------
-
-def _slack_send(slack_app, channel: str, text: str) -> None:
-    """Post a plain-text message to a channel."""
-    try:
-        slack_app.client.chat_postMessage(channel=channel, text=text)
-    except Exception:
-        log.exception("AirSync: failed to send to channel %s", channel)
-
-
-def _open_dm(slack_app, user_id: str) -> str:
-    """Open (or retrieve) a DM channel with user_id; return channel id."""
-    result = slack_app.client.conversations_open(users=[user_id])
-    return result["channel"]["id"]
-
-
-def _update_fuel(db: str, table: str, flight: dict, slack_user: str) -> None:
-    """Insert new L/R fuel rows from Flysto end-of-flight fuel data."""
-    stats  = flight.get("flight_stats", {})
-    l_fuel = stats.get("end_fuel_left_usg")
-    r_fuel = stats.get("end_fuel_right_usg")
-    if l_fuel is None and r_fuel is None:
-        return
-    con = sqlite3.connect(db)
-    now = datetime.now()
-    if l_fuel is not None:
-        con.execute(
-            f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
-            (now, 6, l_fuel, slack_user),
-        )
-    if r_fuel is not None:
-        con.execute(
-            f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
-            (now, 8, r_fuel, slack_user),
-        )
-    con.commit()
-    con.close()
-    log.info("AirSync: fuel updated — L=%s R=%s", l_fuel, r_fuel)
-
-
-def _fmt_airsync_msg(flight: dict, slack_user: str) -> str:
-    """Format a full AirSync notification message."""
-    pilot_name  = get_pilot_name(slack_user)
-    date_str    = flight.get("date", "?")
-    url         = flight.get("url", "")
-    flags       = flight.get("flags", [])
-    score_pct   = flight.get("score_pct")
-    score_earned = flight.get("score_earned")
-    score_total  = flight.get("score_total")
-    params      = flight.get("approach_params", [])
-    stats       = flight.get("flight_stats", {})
-    l_fuel      = stats.get("end_fuel_left_usg")
-    r_fuel      = stats.get("end_fuel_right_usg")
-    is_jerry    = slack_user == JERRY_SLACK_ID
-
-    header = f"✈️ *AirSync — N900JV — {date_str}*"
-    if not is_jerry:
-        header += f"  [{pilot_name}]"
-
-    lines = [header]
-
-    # Fuel update line
-    if l_fuel is not None or r_fuel is not None:
-        l_str = f"{l_fuel:.0f}g" if l_fuel is not None else "—"
-        r_str = f"{r_fuel:.0f}g" if r_fuel is not None else "—"
-        lines.append(f":fuelpump: Fuel updated → L: {l_str}  R: {r_str}")
-
-    # Flags section
-    if flags:
-        lines.append("")
-        lines.append("🚩 *FLAGS*")
-        for flag in flags:
-            lines.append(f"  • {flag}")
-
-    # Approach score + params
-    if score_pct is not None or params:
-        lines.append("")
-        score_str = ""
-        if score_pct is not None:
-            score_str = f"{score_pct}%"
-            if score_earned is not None and score_total is not None:
-                score_str += f"  ({score_earned}/{score_total} pts)"
-        lines.append(f"📊 *APPROACH{' — ' + score_str if score_str else ''}*")
-        for p in params:
-            result = p.get("result", "")
-            icon   = "✅" if result == "PASS" else ("❌" if result == "FAIL" else "ℹ️")
-            parts  = []
-            if p.get("value"):
-                parts.append(p["value"])
-            if p.get("required"):
-                parts.append(f"req {p['required']}")
-            detail = "  _" + "  ".join(parts) + "_" if parts else ""
-            lines.append(f"  {icon} {p['parameter']}{detail}")
-
-    # Link (only shown to Jerry)
-    if url:
-        lines.append("")
-        lines.append(f"<{url}|View on Flysto>")
-
-    return "\n".join(lines)
-
-
-def _airsync_worker(
-    slack_app,
-    channel_id: str,
-    slack_user: str,
-    db: str,
-    table: str,
-) -> None:
-    """
-    Background thread: polls AIRSYNC_JSON for up to 10 min after a log command.
-    On success: updates fuel in SQLite, posts formatted message.
-    On timeout: DMs Jerry.
-    """
-    try:
-        max_attempts = 20   # 20 × 30s = 10 minutes
-        for attempt in range(max_attempts):
-            time.sleep(30)
-            try:
-                with open(AIRSYNC_JSON) as f:
-                    data = json.load(f)
-                if data and data[0].get("result") is not False:
-                    flight = data[0]
-                    # Reset file so we don't re-process on next log
-                    try:
-                        with open(AIRSYNC_JSON, "w") as fout:
-                            json.dump([{"result": False}], fout)
-                    except Exception:
-                        log.exception("AirSync: failed to reset JSON")
-
-                    # Update SQLite with Flysto fuel values
-                    _update_fuel(db, table, flight, slack_user)
-
-                    # Format and send
-                    msg = _fmt_airsync_msg(flight, slack_user)
-                    is_jerry = slack_user == JERRY_SLACK_ID
-                    if is_jerry:
-                        _slack_send(slack_app, channel_id, msg)
-                    else:
-                        dm_channel = _open_dm(slack_app, JERRY_SLACK_ID)
-                        _slack_send(slack_app, dm_channel, msg)
-
-                    log.info("AirSync: completed for %s (attempt %d)", slack_user, attempt + 1)
-                    return
-
-            except (json.JSONDecodeError, FileNotFoundError):
-                log.debug("AirSync: JSON not ready yet (attempt %d)", attempt + 1)
-            except Exception:
-                log.exception("AirSync: poll error on attempt %d", attempt + 1)
-
-        # Timeout — DM Jerry
-        log.warning("AirSync: timed out after %d minutes", max_attempts * 30 // 60)
-        try:
-            dm_channel = _open_dm(slack_app, JERRY_SLACK_ID)
-            _slack_send(
-                slack_app,
-                dm_channel,
-                ":warning: *AirSync timed out* — no new flight found on Flysto after 10 minutes.",
-            )
-        except Exception:
-            log.exception("AirSync: failed to DM timeout notice")
-    finally:
-        _airsync_active.clear()
-        log.info("AirSync: worker exited")
-
-
 def format_for_slack(raw: str, cmd: str, plane_name: str, slack_id: str = ""):
     """Route raw TBM response through the correct Slack mrkdwn formatter."""
     if raw is None:
@@ -480,7 +306,8 @@ def build_handler(
     """
     peers:   list of TBM subclasses that should also receive a silent fuelp
              update whenever this bot processes a fuelp command.
-    airsync: if True, spawn an AirSync worker after every successful log.
+    airsync: if True, write an AirSync pending file after every successful log
+             so that flysto_pull.py (cron on liono) can pick it up.
     """
 
     slack_app = App(token=bot_token)
@@ -514,28 +341,23 @@ def build_handler(
             raw_response = plane.process(text, slack_user)
             response     = format_for_slack(raw_response, text, plane_name, slack_user)
 
-            # AirSync — spawn background worker after a successful log on N900JV
+            # AirSync — write pending file after a successful log on N900JV.
+            # flysto_pull.py (cron, runs on liono) checks this file each minute,
+            # sends the Slack notification directly, and deletes the file when done.
             cmd0 = text.lower().split()[0]
             if airsync and cmd0 == "log" and raw_response.startswith("Flight Time:"):
                 channel_id = message.get("channel", "")
-                # Reset the JSON file so we don't accidentally pick up a stale result
                 try:
-                    with open(AIRSYNC_JSON, "w") as _f:
-                        json.dump([{"result": False}], _f)
+                    with open(AIRSYNC_PENDING, "w") as _pf:
+                        json.dump({
+                            "channel_id": channel_id,
+                            "slack_user": slack_user,
+                            "table":      PlaneClass.TABLE,
+                            "created_at": time.time(),
+                        }, _pf)
+                    log.info("[%s] AirSync: pending file written for user %s", plane_name, slack_user)
                 except Exception:
-                    log.exception("[%s] AirSync: failed to reset JSON before polling", plane_name)
-                if not _airsync_active.is_set():
-                    _airsync_active.set()
-                    t = threading.Thread(
-                        target=_airsync_worker,
-                        args=(slack_app, channel_id, slack_user, PlaneClass.DB, PlaneClass.TABLE),
-                        daemon=True,
-                        name=f"airsync-{plane_name}",
-                    )
-                    t.start()
-                    log.info("[%s] AirSync: worker spawned for user %s", plane_name, slack_user)
-                else:
-                    log.warning("[%s] AirSync: worker already running, skipping", plane_name)
+                    log.exception("[%s] AirSync: failed to write pending file", plane_name)
 
             # fuelp — silently mirror the update to all peer aircraft tables
             if text.lower().split()[0] == "fuelp" and peers:
