@@ -463,8 +463,13 @@ def _open_dm(token: str, user_id: str) -> str:
     return result["channel"]["id"]
 
 
-def _post(token: str, channel: str, text: str) -> None:
-    result = _slack_api(token, "chat.postMessage", {"channel": channel, "text": text})
+def _post(token: str, channel: str, payload) -> None:
+    """Send a message. payload may be a plain string or a Block Kit dict."""
+    if isinstance(payload, str):
+        body = {"channel": channel, "text": payload}
+    else:
+        body = {"channel": channel, **payload}
+    result = _slack_api(token, "chat.postMessage", body)
     if not result.get("ok"):
         print(f"Slack post failed: {result.get('error')}")
 
@@ -543,11 +548,25 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
             detail = "  _" + "  ".join(parts) + "_" if parts else ""
             lines.append(f">{icon} {p['parameter']}{detail}")
 
-    if url:
-        lines.append("")
-        lines.append(f"<{url}|View on Flysto>")
+    body = "\n".join(lines)
 
-    return "\n".join(lines)
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+    ]
+    if url:
+        blocks.append({
+            "type": "actions",
+            "elements": [{
+                "type": "button",
+                "text": {"type": "plain_text", "text": "View on Flysto", "emoji": True},
+                "url": url,
+            }],
+        })
+
+    return {
+        "text": f"AirSync \u2014 N900JV \u2014 {date_str}",  # fallback for notifications
+        "blocks": blocks,
+    }
 
 
 def _airsync_notify(flight: dict, pending: dict, token: str) -> None:
