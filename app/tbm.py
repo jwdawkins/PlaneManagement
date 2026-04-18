@@ -551,8 +551,8 @@ class TBM:
             uid = self.sqlUIDLatest(9)
             if uid is None:
                 return "Nothing to delete."
-            # A log entry is 4 consecutive rows: pilot, fuel_L, fuel_R, hobbs
-            self.sqlWrite(f"DELETE FROM {self.TABLE} WHERE uid>=?", (uid - 3,))
+            # A log entry is exactly 4 consecutive rows: pilot, fuel_L, fuel_R, hobbs
+            self.sqlWrite(f"DELETE FROM {self.TABLE} WHERE uid BETWEEN ? AND ?", (uid - 3, uid))
             return "Log entry deleted."
 
         if entry == "squawk":
