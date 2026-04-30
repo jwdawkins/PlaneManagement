@@ -534,21 +534,12 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict, fuel_ok: b
     blocks = []
 
     # ── Route button (top) ────────────────────────────────────────────────────
-    top_elements = []
     if url:
-        top_elements.append({
+        blocks.append({"type": "actions", "elements": [{
             "type": "button",
             "text": {"type": "plain_text", "text": route, "emoji": False},
             "url": url,
-        })
-    if not is_jerry and pilot_name:
-        top_elements.append({
-            "type": "button",
-            "text": {"type": "plain_text", "text": pilot_name, "emoji": False},
-            "action_id": "pilot_label",
-        })
-    if top_elements:
-        blocks.append({"type": "actions", "elements": top_elements})
+        }]})
 
     # ── Fuel warning (only shown when fuel was expected but unavailable) ──────
     if not fuel_ok:
@@ -609,9 +600,12 @@ def _airsync_notify(flight: dict, pending: dict, token: str, fuel_ok: bool = Tru
     if is_jerry:
         _post(token, channel_id, msg)
     else:
-        # DM Jerry with the full details
-        dm_channel = _open_dm(token, _JERRY_ID)
-        _post(token, dm_channel, msg)
+        # DM Jerry
+        jerry_dm = _open_dm(token, _JERRY_ID)
+        _post(token, jerry_dm, msg)
+        # Also DM the pilot their own approach report
+        pilot_dm = _open_dm(token, slack_user)
+        _post(token, pilot_dm, msg)
 
 
 def _airsync_notify_timeout(pending: dict, token: str) -> None:
