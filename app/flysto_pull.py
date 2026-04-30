@@ -474,25 +474,31 @@ def _post(token: str, channel: str, payload) -> None:
         print(f"Slack post failed: {result.get('error')}")
 
 
-def _update_fuel_sqlite(flight: dict, slack_user: str, table: str) -> None:
+def _update_fuel_sqlite(flight: dict, slack_user: str, table: str) -> bool:
+    """Update L/R fuel rows from Flysto end-of-flight data. Returns True on success."""
     stats  = flight.get("flight_stats", {})
     l_fuel = stats.get("end_fuel_left_usg")
     r_fuel = stats.get("end_fuel_right_usg")
     if l_fuel is None and r_fuel is None:
         print("AirSync: no fuel data in Flysto response — SQLite not updated.")
-        return
-    from datetime import datetime as _dt
-    con = sqlite3.connect(_LIONO_DB)
-    now = _dt.now()
-    if l_fuel is not None:
-        con.execute(f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
-                    (now, 6, l_fuel, slack_user))
-    if r_fuel is not None:
-        con.execute(f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
-                    (now, 8, r_fuel, slack_user))
-    con.commit()
-    con.close()
-    print(f"AirSync: fuel updated in SQLite — L={l_fuel} R={r_fuel}")
+        return False
+    try:
+        from datetime import datetime as _dt
+        con = sqlite3.connect(_LIONO_DB, timeout=10)
+        now = _dt.now()
+        if l_fuel is not None:
+            con.execute(f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
+                        (now, 6, l_fuel, slack_user))
+        if r_fuel is not None:
+            con.execute(f"INSERT INTO {table}(date,type,valuen,number) VALUES(?,?,?,?)",
+                        (now, 8, r_fuel, slack_user))
+        con.commit()
+        con.close()
+        print(f"AirSync: fuel updated in SQLite — L={l_fuel} R={r_fuel}")
+        return True
+    except Exception as e:
+        print(f"AirSync: ERROR writing fuel to SQLite — {e}")
+        return False
 
 
 def _load_pilots_cfg() -> dict:
@@ -503,7 +509,7 @@ def _load_pilots_cfg() -> dict:
         return {}
 
 
-def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
+def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict, fuel_ok: bool = True) -> str:
     pilot_cfg   = pilots_cfg.get("pilots", {}).get(slack_user, {})
     pilot_name  = pilot_cfg.get("name", slack_user)
     is_jerry    = slack_user == _JERRY_ID
@@ -543,6 +549,13 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
         })
     if top_elements:
         blocks.append({"type": "actions", "elements": top_elements})
+
+    # ── Fuel warning (only shown when fuel was expected but unavailable) ──────
+    if not fuel_ok:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":warning: *Fuel not synced* — no fuel data returned from Flysto. Update manually with `log L R HOBBS`."},
+        })
 
     # ── Flags ─────────────────────────────────────────────────────────────────
     if flags:
@@ -585,13 +598,13 @@ def _fmt_airsync_msg(flight: dict, slack_user: str, pilots_cfg: dict) -> str:
     }
 
 
-def _airsync_notify(flight: dict, pending: dict, token: str) -> None:
+def _airsync_notify(flight: dict, pending: dict, token: str, fuel_ok: bool = True) -> None:
     pilots_cfg = _load_pilots_cfg()
     slack_user = pending["slack_user"]
     channel_id = pending["channel_id"]
     is_jerry   = slack_user == _JERRY_ID
 
-    msg = _fmt_airsync_msg(flight, slack_user, pilots_cfg)
+    msg = _fmt_airsync_msg(flight, slack_user, pilots_cfg, fuel_ok=fuel_ok)
 
     if is_jerry:
         _post(token, channel_id, msg)
@@ -686,10 +699,13 @@ def main():
         print(f"Updated FLYSTO_LOG_ID → {f['id']}")
 
         # Update SQLite fuel directly on liono
-        _update_fuel_sqlite(detail, pending["slack_user"], pending["table"])
+        fuel_updated  = _update_fuel_sqlite(detail, pending["slack_user"], pending["table"])
+        fuel_was_logged = pending.get("fuel_logged", True)
+        # Show warning only when the pilot omitted fuel (2-arg log) AND Flysto had no data
+        fuel_ok = fuel_updated or fuel_was_logged
 
         # Send Slack notification
-        _airsync_notify(detail, pending, token)
+        _airsync_notify(detail, pending, token, fuel_ok=fuel_ok)
         print("AirSync: Slack notification sent.")
 
         # Done — remove pending file so cron becomes a no-op again

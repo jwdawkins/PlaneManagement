@@ -354,6 +354,8 @@ def build_handler(
                             "slack_user": slack_user,
                             "table":      PlaneClass.TABLE,
                             "created_at": time.time(),
+                            # True = pilot supplied fuel; False = 2-arg log, AirSync must fill in
+                            "fuel_logged": len(text.split()) >= 4,
                         }, _pf)
                     log.info("[%s] AirSync: pending file written for user %s", plane_name, slack_user)
                 except Exception:
